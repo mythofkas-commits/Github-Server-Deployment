@@ -165,22 +165,33 @@ const DeploymentDashboard = () => {
   const refreshAuth = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/auth/me`, { credentials: 'include' });
+      if (res.status === 401) {
+        handleUnauthorized();
+        return;
+      }
       if (!res.ok) {
         setAuth({ checked: true, authenticated: false, user: null });
+        setProjects([]);
         return;
       }
       const data = await res.json().catch(() => ({}));
-      const user = data?.user ? {
+      if (!data?.authenticated || !data?.user) {
+        handleUnauthorized();
+        return;
+      }
+      const user = {
         id: data.user.id,
         username: data.user.username,
         role: data.user.role,
         isAdmin: !!data.user.isAdmin
-      } : null;
+      };
       setAuth({ checked: true, authenticated: true, user });
-    } catch {
+    } catch (error) {
+      console.error('Failed to verify auth', error);
       setAuth({ checked: true, authenticated: false, user: null });
+      setProjects([]);
     }
-  }, []);
+  }, [handleUnauthorized]);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -268,20 +279,22 @@ const DeploymentDashboard = () => {
   useEffect(() => { refreshAuth(); }, [refreshAuth]);
 
   useEffect(() => {
+    if (!auth.checked) return;
     if (auth.authenticated) {
       loadProjects();
     } else {
       setProjects([]);
     }
-  }, [auth.authenticated, loadProjects]);
+  }, [auth.authenticated, auth.checked, loadProjects]);
 
   useEffect(() => {
+    if (!auth.checked) return;
     if (auth.authenticated) {
       loadTemplates();
     } else {
       setTemplates([]);
     }
-  }, [auth.authenticated, loadTemplates]);
+  }, [auth.authenticated, auth.checked, loadTemplates]);
 
   const fetchProjectDeployments = useCallback(async (projectId) => {
     if (!projectId) return;

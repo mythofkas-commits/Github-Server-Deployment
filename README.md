@@ -57,6 +57,13 @@ Systemd/PM2 service should run `PORT=3002 node server.js` and nginx must proxy `
 - The wizard prompts for the admin username, password (stored as a bcrypt hash), and session secret, then safely writes them into `api/.env`.
 - Existing values are detected; you can choose to keep or regenerate them, so there's no need to manually edit `.env` for these keys anymore.
 
+#### Manual auth regression checks
+
+- Open the dashboard in a fresh private/incognito window: you should see only the login/sign-up UI.
+- With no cookies, calling `GET /deployer/api/auth/me` (or `/api/auth/me` if same origin) must return `401`.
+- After signing up or logging in, the dashboard view appears and `/api/projects` etc. respond with data.
+- Closing the session and reopening in a new private window should return to the Auth view until you log in again.
+
 ### Users & authentication
 
 - Admin remains env-based—you are the only platform admin and still use `ADMIN_USERNAME` + `ADMIN_PASSWORD_HASH` for privileged access (diagnostics, full project visibility, etc.).
