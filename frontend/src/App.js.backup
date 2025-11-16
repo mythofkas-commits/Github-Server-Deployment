@@ -1,0 +1,848 @@
+import React, { useState, useEffect } from 'react';
+import { Play, Settings, GitBranch, Server, Globe, Plus, Upload, Eye, Clock, CheckCircle, XCircle, AlertCircle, Trash2, RotateCcw, Terminal } from 'lucide-react';
+
+const DeploymentDashboard = () => {
+  const [projects, setProjects] = useState([
+    {
+      id: 1,
+      name: 'portfolio-site',
+      repo: 'username/portfolio-site',
+      status: 'success',
+      lastDeploy: '2 hours ago',
+      branch: 'main',
+      target: 'server',
+      stack: ['React', 'TypeScript'],
+      buildCommand: 'npm run build',
+      deployPath: '/var/www/portfolio'
+    },
+    {
+      id: 2,
+      name: 'api-gateway',
+      repo: 'username/api-gateway',
+      status: 'deploying',
+      lastDeploy: 'Deploying now',
+      branch: 'main',
+      target: 'server',
+      stack: ['Node.js', 'Express'],
+      buildCommand: 'npm install',
+      deployPath: '/var/www/api'
+    },
+    {
+      id: 3,
+      name: 'docs-website',
+      repo: 'username/docs-website',
+      status: 'failed',
+      lastDeploy: '1 day ago',
+      branch: 'main',
+      target: 'github-pages',
+      stack: ['HTML', 'CSS', 'JavaScript'],
+      buildCommand: 'npm run build',
+      deployPath: 'gh-pages'
+    }
+  ]);
+
+  const [view, setView] = useState('dashboard');
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [newProjectData, setNewProjectData] = useState({
+    name: '',
+    template: 'react',
+    target: 'server',
+    description: ''
+  });
+  const [importProjectData, setImportProjectData] = useState({
+    repoUrl: '',
+    branch: 'main',
+    target: 'server',
+    buildCommand: '',
+    deployPath: ''
+  });
+  const [deployLogs, setDeployLogs] = useState([
+    { time: '14:32:01', message: 'Starting deployment...', type: 'info' },
+    { time: '14:32:03', message: 'Pulling latest changes from main branch', type: 'info' },
+    { time: '14:32:05', message: 'Running npm install...', type: 'info' },
+    { time: '14:32:18', message: 'Dependencies installed successfully', type: 'success' },
+    { time: '14:32:19', message: 'Running build command: npm run build', type: 'info' },
+    { time: '14:32:45', message: 'Build completed successfully', type: 'success' },
+    { time: '14:32:46', message: 'Deploying to /var/www/portfolio', type: 'info' },
+    { time: '14:32:47', message: 'Files copied successfully', type: 'success' },
+    { time: '14:32:48', message: 'Restarting nginx service', type: 'info' },
+    { time: '14:32:50', message: 'Deployment completed successfully!', type: 'success' }
+  ]);
+
+  const getStatusIcon = (status) => {
+    switch(status) {
+      case 'success': return <CheckCircle className="w-5 h-5 text-green-500" />;
+      case 'failed': return <XCircle className="w-5 h-5 text-red-500" />;
+      case 'deploying': return <Clock className="w-5 h-5 text-blue-500 animate-spin" />;
+      default: return <AlertCircle className="w-5 h-5 text-gray-500" />;
+    }
+  };
+
+  const getStatusColor = (status) => {
+    switch(status) {
+      case 'success': return 'bg-green-100 text-green-800 border-green-300';
+      case 'failed': return 'bg-red-100 text-red-800 border-red-300';
+      case 'deploying': return 'bg-blue-100 text-blue-800 border-blue-300';
+      default: return 'bg-gray-100 text-gray-800 border-gray-300';
+    }
+  };
+
+  const handleDeploy = (projectId) => {
+    setProjects(projects.map(p => 
+      p.id === projectId ? { ...p, status: 'deploying', lastDeploy: 'Deploying now' } : p
+    ));
+    setTimeout(() => {
+      setProjects(projects.map(p => 
+        p.id === projectId ? { ...p, status: 'success', lastDeploy: 'Just now' } : p
+      ));
+    }, 3000);
+  };
+
+  const handleCreateProject = () => {
+    const newProject = {
+      id: projects.length + 1,
+      name: newProjectData.name,
+      repo: `username/${newProjectData.name}`,
+      status: 'success',
+      lastDeploy: 'Just created',
+      branch: 'main',
+      target: newProjectData.target,
+      stack: newProjectData.template === 'react' ? ['React', 'TypeScript'] : 
+             newProjectData.template === 'node' ? ['Node.js', 'Express'] :
+             ['HTML', 'CSS', 'JavaScript'],
+      buildCommand: newProjectData.template === 'react' ? 'npm run build' : 'npm install',
+      deployPath: newProjectData.target === 'server' ? `/var/www/${newProjectData.name}` : 'gh-pages'
+    };
+    setProjects([...projects, newProject]);
+    setView('dashboard');
+    setNewProjectData({ name: '', template: 'react', target: 'server', description: '' });
+  };
+
+  const handleImportProject = () => {
+    const repoName = importProjectData.repoUrl.split('/').pop().replace('.git', '');
+    const newProject = {
+      id: projects.length + 1,
+      name: repoName,
+      repo: importProjectData.repoUrl.replace('https://github.com/', '').replace('.git', ''),
+      status: 'success',
+      lastDeploy: 'Just imported',
+      branch: importProjectData.branch,
+      target: importProjectData.target,
+      stack: ['Auto-detected'],
+      buildCommand: importProjectData.buildCommand || 'npm run build',
+      deployPath: importProjectData.deployPath || `/var/www/${repoName}`
+    };
+    setProjects([...projects, newProject]);
+    setView('dashboard');
+    setImportProjectData({ repoUrl: '', branch: 'main', target: 'server', buildCommand: '', deployPath: '' });
+  };
+
+  const handleDeleteProject = (projectId) => {
+    setProjects(projects.filter(p => p.id !== projectId));
+    if (selectedProject?.id === projectId) {
+      setSelectedProject(null);
+      setView('dashboard');
+    }
+  };
+
+  const DashboardView = () => (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Your Projects</h2>
+          <p className="text-gray-600 mt-1">{projects.length} active deployment{projects.length !== 1 ? 's' : ''}</p>
+        </div>
+        <div className="flex gap-3">
+          <button 
+            onClick={() => setView('import')}
+            className="flex items-center gap-2 px-4 py-2 bg-white border-2 border-gray-300 rounded-lg hover:border-blue-500 hover:text-blue-600 transition-colors"
+          >
+            <Upload className="w-4 h-4" />
+            Import Project
+          </button>
+          <button 
+            onClick={() => setView('create')}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            New Project
+          </button>
+        </div>
+      </div>
+
+      <div className="grid gap-4">
+        {projects.map(project => (
+          <div key={project.id} className="bg-white rounded-lg border-2 border-gray-200 p-5 hover:border-blue-300 transition-all">
+            <div className="flex items-start justify-between">
+              <div className="flex-1">
+                <div className="flex items-center gap-3 mb-2">
+                  <h3 className="text-lg font-semibold text-gray-900">{project.name}</h3>
+                  <span className={`px-2 py-1 rounded text-xs font-medium border ${getStatusColor(project.status)}`}>
+                    {project.status}
+                  </span>
+                </div>
+                <div className="flex items-center gap-4 text-sm text-gray-600 mb-3">
+                  <span className="flex items-center gap-1">
+                    <GitBranch className="w-4 h-4" />
+                    {project.repo}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    {project.target === 'server' ? <Server className="w-4 h-4" /> : <Globe className="w-4 h-4" />}
+                    {project.target === 'server' ? 'Nginx Server' : 'GitHub Pages'}
+                  </span>
+                  <span>Branch: {project.branch}</span>
+                </div>
+                <div className="flex items-center gap-2 mb-2">
+                  {project.stack.map((tech, i) => (
+                    <span key={i} className="px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs font-medium">
+                      {tech}
+                    </span>
+                  ))}
+                </div>
+                <p className="text-sm text-gray-500">Last deployed: {project.lastDeploy}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => { setSelectedProject(project); setView('logs'); }}
+                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                  title="View Logs"
+                >
+                  <Eye className="w-5 h-5 text-gray-600" />
+                </button>
+                <button 
+                  onClick={() => { setSelectedProject(project); setView('settings'); }}
+                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                  title="Settings"
+                >
+                  <Settings className="w-5 h-5 text-gray-600" />
+                </button>
+                <button 
+                  onClick={() => handleDeploy(project.id)}
+                  disabled={project.status === 'deploying'}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+                >
+                  {project.status === 'deploying' ? (
+                    <>
+                      <Clock className="w-4 h-4 animate-spin" />
+                      Deploying...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4" />
+                      Deploy
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  const CreateProjectView = () => (
+    <div className="max-w-2xl mx-auto">
+      <button 
+        onClick={() => setView('dashboard')}
+        className="text-blue-600 hover:text-blue-700 mb-6 flex items-center gap-2"
+      >
+        ← Back to Dashboard
+      </button>
+      <div className="bg-white rounded-lg border-2 border-gray-200 p-8">
+        <h2 className="text-2xl font-bold text-gray-900 mb-6">Create New Project</h2>
+        <div className="space-y-5">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Project Name</label>
+            <input 
+              type="text"
+              value={newProjectData.name}
+              onChange={(e) => setNewProjectData({...newProjectData, name: e.target.value})}
+              placeholder="my-awesome-project"
+              className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Template</label>
+            <select 
+              value={newProjectData.template}
+              onChange={(e) => setNewProjectData({...newProjectData, template: e.target.value})}
+              className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+            >
+              <option value="react">React + TypeScript</option>
+              <option value="vanilla">Vanilla JavaScript</option>
+              <option value="node">Node.js API</option>
+              <option value="php">PHP Backend</option>
+              <option value="python">Python Flask</option>
+              <option value="blank">Blank Project</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Deployment Target</label>
+            <select 
+              value={newProjectData.target}
+              onChange={(e) => setNewProjectData({...newProjectData, target: e.target.value})}
+              className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+            >
+              <option value="server">Your Nginx Server</option>
+              <option value="github-pages">GitHub Pages</option>
+              <option value="both">Both</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Description (Optional)</label>
+            <textarea 
+              value={newProjectData.description}
+              onChange={(e) => setNewProjectData({...newProjectData, description: e.target.value})}
+              placeholder="What does this project do?"
+              rows="3"
+              className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+          <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
+            <h4 className="font-semibold text-blue-900 mb-2">What happens next:</h4>
+            <ul className="text-sm text-blue-800 space-y-1">
+              <li>✓ GitHub repository will be created</li>
+              <li>✓ Starter files will be generated</li>
+              <li>✓ Webhook will be configured for auto-deployment</li>
+              <li>✓ Server directories will be set up</li>
+              <li>✓ You'll get a clone command to start coding</li>
+            </ul>
+          </div>
+          <button 
+            onClick={handleCreateProject}
+            disabled={!newProjectData.name}
+            className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed font-medium transition-colors"
+          >
+            Create Project
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const ImportProjectView = () => (
+    <div className="max-w-2xl mx-auto">
+      <button 
+        onClick={() => setView('dashboard')}
+        className="text-blue-600 hover:text-blue-700 mb-6 flex items-center gap-2"
+      >
+        ← Back to Dashboard
+      </button>
+      <div className="bg-white rounded-lg border-2 border-gray-200 p-8">
+        <h2 className="text-2xl font-bold text-gray-900 mb-6">Import Existing Project</h2>
+        <div className="space-y-5">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">GitHub Repository URL</label>
+            <input 
+              type="text"
+              value={importProjectData.repoUrl}
+              onChange={(e) => setImportProjectData({...importProjectData, repoUrl: e.target.value})}
+              placeholder="https://github.com/username/repo-name"
+              className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Branch</label>
+            <input 
+              type="text"
+              value={importProjectData.branch}
+              onChange={(e) => setImportProjectData({...importProjectData, branch: e.target.value})}
+              placeholder="main"
+              className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Build Command</label>
+            <input 
+              type="text"
+              value={importProjectData.buildCommand}
+              onChange={(e) => setImportProjectData({...importProjectData, buildCommand: e.target.value})}
+              placeholder="npm run build (auto-detected if left empty)"
+              className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Deployment Target</label>
+            <select 
+              value={importProjectData.target}
+              onChange={(e) => setImportProjectData({...importProjectData, target: e.target.value})}
+              className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+            >
+              <option value="server">Your Nginx Server</option>
+              <option value="github-pages">GitHub Pages</option>
+              <option value="both">Both</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Deploy Path (Server)</label>
+            <input 
+              type="text"
+              value={importProjectData.deployPath}
+              onChange={(e) => setImportProjectData({...importProjectData, deployPath: e.target.value})}
+              placeholder="/var/www/project-name (auto-detected if left empty)"
+              className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+          <div className="bg-green-50 border-2 border-green-200 rounded-lg p-4">
+            <h4 className="font-semibold text-green-900 mb-2">System will auto-detect:</h4>
+            <ul className="text-sm text-green-800 space-y-1">
+              <li>✓ Tech stack (package.json, requirements.txt, composer.json)</li>
+              <li>✓ Build commands if not specified</li>
+              <li>✓ Optimal deployment configuration</li>
+            </ul>
+          </div>
+          <button 
+            onClick={handleImportProject}
+            disabled={!importProjectData.repoUrl}
+            className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed font-medium transition-colors"
+          >
+            Import & Setup
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const LogsView = () => (
+    <div className="max-w-4xl mx-auto">
+      <button 
+        onClick={() => setView('dashboard')}
+        className="text-blue-600 hover:text-blue-700 mb-6 flex items-center gap-2"
+      >
+        ← Back to Dashboard
+      </button>
+      <div className="bg-white rounded-lg border-2 border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900">{selectedProject?.name}</h2>
+            <p className="text-gray-600">Deployment Logs</p>
+          </div>
+          <div className="flex gap-2">
+            {getStatusIcon(selectedProject?.status)}
+            <span className="font-medium capitalize">{selectedProject?.status}</span>
+          </div>
+        </div>
+        <div className="bg-gray-900 rounded-lg p-4 font-mono text-sm overflow-auto" style={{maxHeight: '500px'}}>
+          {deployLogs.map((log, index) => (
+            <div key={index} className="mb-1 flex gap-3">
+              <span className="text-gray-500">{log.time}</span>
+              <span className={
+                log.type === 'success' ? 'text-green-400' :
+                log.type === 'error' ? 'text-red-400' :
+                'text-gray-300'
+              }>
+                {log.message}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 flex gap-3">
+          <button 
+            onClick={() => handleDeploy(selectedProject.id)}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            <RotateCcw className="w-4 h-4" />
+            Redeploy
+          </button>
+          <button className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700">
+            <Terminal className="w-4 h-4" />
+            Open Terminal
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const SettingsView = () => {
+    const [activeTab, setActiveTab] = useState('general');
+    
+    return (
+      <div className="max-w-4xl mx-auto">
+        <button 
+          onClick={() => setView('dashboard')}
+          className="text-blue-600 hover:text-blue-700 mb-6 flex items-center gap-2"
+        >
+          ← Back to Dashboard
+        </button>
+        <div className="bg-white rounded-lg border-2 border-gray-200 overflow-hidden">
+          <div className="border-b-2 border-gray-200 flex">
+            <button 
+              onClick={() => setActiveTab('general')}
+              className={`px-6 py-3 font-medium ${activeTab === 'general' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-600 hover:bg-gray-50'}`}
+            >
+              General
+            </button>
+            <button 
+              onClick={() => setActiveTab('integrations')}
+              className={`px-6 py-3 font-medium ${activeTab === 'integrations' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-600 hover:bg-gray-50'}`}
+            >
+              Integrations
+            </button>
+            <button 
+              onClick={() => setActiveTab('advanced')}
+              className={`px-6 py-3 font-medium ${activeTab === 'advanced' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-600 hover:bg-gray-50'}`}
+            >
+              Advanced
+            </button>
+          </div>
+          
+          <div className="p-8">
+            {activeTab === 'general' && (
+              <>
+                <h2 className="text-2xl font-bold text-gray-900 mb-6">{selectedProject?.name} Settings</h2>
+                <div className="space-y-6">
+                  <div>
+                    <h3 className="font-semibold text-gray-900 mb-3">Repository</h3>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">GitHub Repository</label>
+                        <input 
+                          type="text"
+                          value={selectedProject?.repo}
+                          readOnly
+                          className="w-full px-4 py-2 bg-gray-50 border-2 border-gray-300 rounded-lg"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Branch</label>
+                        <input 
+                          type="text"
+                          defaultValue={selectedProject?.branch}
+                          className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold text-gray-900 mb-3">Build Configuration</h3>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Build Command</label>
+                        <input 
+                          type="text"
+                          defaultValue={selectedProject?.buildCommand}
+                          className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Output Directory</label>
+                        <input 
+                          type="text"
+                          defaultValue="dist"
+                          className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold text-gray-900 mb-3">Deployment</h3>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Deploy Path</label>
+                        <input 
+                          type="text"
+                          defaultValue={selectedProject?.deployPath}
+                          className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Post-Deploy Command</label>
+                        <input 
+                          type="text"
+                          placeholder="sudo systemctl restart nginx"
+                          className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold text-gray-900 mb-3">Environment Variables</h3>
+                    <div className="bg-gray-50 rounded-lg p-4 mb-3">
+                      <p className="text-sm text-gray-600 mb-2">Environment variables are stored securely on your server</p>
+                      <button className="text-blue-600 hover:text-blue-700 text-sm font-medium">
+                        + Add Environment Variable
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3 pt-4 border-t-2 border-gray-200">
+                    <button className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium">
+                      Save Changes
+                    </button>
+                    <button 
+                      onClick={() => handleDeleteProject(selectedProject.id)}
+                      className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium flex items-center gap-2"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Delete Project
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+            
+            {activeTab === 'integrations' && (
+              <>
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">Integrations</h2>
+                <p className="text-gray-600 mb-6">Connect your project with external services</p>
+                
+                <div className="space-y-4">
+                  <div className="border-2 border-gray-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
+                          <span className="text-purple-600 font-bold">S</span>
+                        </div>
+                        <div>
+                          <h4 className="font-semibold text-gray-900">Slack</h4>
+                          <p className="text-sm text-gray-600">Deployment notifications</p>
+                        </div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" className="sr-only peer" />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                      </label>
+                    </div>
+                    <input 
+                      type="text" 
+                      placeholder="Webhook URL" 
+                      className="w-full mt-2 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="border-2 border-gray-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                          <span className="text-blue-600 font-bold">D</span>
+                        </div>
+                        <div>
+                          <h4 className="font-semibold text-gray-900">Discord</h4>
+                          <p className="text-sm text-gray-600">Deployment notifications</p>
+                        </div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" className="sr-only peer" />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                      </label>
+                    </div>
+                    <input 
+                      type="text" 
+                      placeholder="Webhook URL" 
+                      className="w-full mt-2 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="border-2 border-gray-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center">
+                          <span className="text-orange-600 font-bold">S3</span>
+                        </div>
+                        <div>
+                          <h4 className="font-semibold text-gray-900">AWS S3</h4>
+                          <p className="text-sm text-gray-600">Deploy to S3 bucket</p>
+                        </div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" className="sr-only peer" />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                      </label>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      <input 
+                        type="text" 
+                        placeholder="Bucket Name" 
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                      />
+                      <input 
+                        type="text" 
+                        placeholder="Region (e.g., us-east-1)" 
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="border-2 border-gray-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-yellow-100 rounded-lg flex items-center justify-center">
+                          <span className="text-yellow-600 font-bold">CF</span>
+                        </div>
+                        <div>
+                          <h4 className="font-semibold text-gray-900">Cloudflare</h4>
+                          <p className="text-sm text-gray-600">Cache purging & DNS</p>
+                        </div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" className="sr-only peer" />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                      </label>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      <label className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" className="rounded" />
+                        <span className="text-gray-700">Purge cache on deployment</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="border-2 border-gray-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                          <span className="text-blue-600 font-bold">🐳</span>
+                        </div>
+                        <div>
+                          <h4 className="font-semibold text-gray-900">Docker</h4>
+                          <p className="text-sm text-gray-600">Container deployment</p>
+                        </div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" className="sr-only peer" />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                      </label>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      <input 
+                        type="text" 
+                        placeholder="Image Name" 
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                      />
+                      <input 
+                        type="number" 
+                        placeholder="Port (e.g., 3000)" 
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="border-2 border-gray-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-red-100 rounded-lg flex items-center justify-center">
+                          <span className="text-red-600 font-bold">S</span>
+                        </div>
+                        <div>
+                          <h4 className="font-semibold text-gray-900">Sentry</h4>
+                          <p className="text-sm text-gray-600">Error tracking</p>
+                        </div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" className="sr-only peer" />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                      </label>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      <label className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" className="rounded" defaultChecked />
+                        <span className="text-gray-700">Create release on deployment</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <button className="w-full mt-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium">
+                  Save Integration Settings
+                </button>
+              </>
+            )}
+            
+            {activeTab === 'advanced' && (
+              <>
+                <h2 className="text-2xl font-bold text-gray-900 mb-6">Advanced Settings</h2>
+                <div className="space-y-6">
+                  <div>
+                    <h3 className="font-semibold text-gray-900 mb-3">Database Backup</h3>
+                    <div className="space-y-3">
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" className="rounded" />
+                        <span className="text-sm text-gray-700">Backup database before deployment</span>
+                      </label>
+                      <select className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none">
+                        <option>PostgreSQL</option>
+                        <option>MongoDB</option>
+                        <option>MySQL</option>
+                        <option>Redis</option>
+                      </select>
+                      <input 
+                        type="text"
+                        placeholder="Database Connection URL"
+                        className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold text-gray-900 mb-3">Auto Rollback</h3>
+                    <div className="space-y-3">
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" className="rounded" defaultChecked />
+                        <span className="text-sm text-gray-700">Automatically rollback on deployment failure</span>
+                      </label>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Keep Backups</label>
+                        <input 
+                          type="number"
+                          defaultValue="5"
+                          className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">Number of backups to retain</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold text-gray-900 mb-3">Health Check</h3>
+                    <div className="space-y-3">
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" className="rounded" defaultChecked />
+                        <span className="text-sm text-gray-700">Run health check after deployment</span>
+                      </label>
+                      <input 
+                        type="text"
+                        placeholder="Health check URL (e.g., /health)"
+                        className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <button className="w-full py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium">
+                    Save Advanced Settings
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
+      <div className="max-w-7xl mx-auto">
+        <header className="mb-8">
+          <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
+            <Server className="w-8 h-8 text-blue-600" />
+            Deployment Dashboard
+          </h1>
+          <p className="text-gray-600 mt-1">Automated deployment system for your projects</p>
+        </header>
+
+        {view === 'dashboard' && <DashboardView />}
+        {view === 'create' && <CreateProjectView />}
+        {view === 'import' && <ImportProjectView />}
+        {view === 'logs' && <LogsView />}
+        {view === 'settings' && <SettingsView />}
+      </div>
+    </div>
+  );
+};
+
+export default DeploymentDashboard;
+

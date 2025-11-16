@@ -1,0 +1,25 @@
+# Node / React build artifacts
+node_modules/
+build/
+dist/
+.next/
+*.log
+logs/
+
+# Environment files
+.env
+*.env
+api/.env
+api/.env.*
+frontend/.env
+frontend/.env.*
+
+# OS/editor cruft
+.DS_Store
+.vscode/
+.idea/
+
+# Misc
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
