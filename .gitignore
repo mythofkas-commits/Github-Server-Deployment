@@ -11,6 +11,7 @@ logs/
 *.env
 api/.env
 api/.env.*
+!api/.env.example
 frontend/.env
 frontend/.env.*
 

@@ -51,6 +51,12 @@ Systemd/PM2 service should run `PORT=3002 node server.js` and nginx must proxy `
 - Always serve the dashboard/API over HTTPS (the auth cookie is `secure` in production) and remember that deploy/test scripts still execute with full system privileges—only trusted admins should get credentials.
 - Project build/deploy paths are normalized so user input cannot escape the checked-out repo or configured nginx root.
 
+#### Admin credential wizard
+
+- Run `cd api && npm run setup:admin` the first time you deploy (or anytime you need to rotate admin secrets).
+- The wizard prompts for the admin username, password (stored as a bcrypt hash), and session secret, then safely writes them into `api/.env`.
+- Existing values are detected; you can choose to keep or regenerate them, so there's no need to manually edit `.env` for these keys anymore.
+
 ### Users & authentication
 
 - Admin remains env-based—you are the only platform admin and still use `ADMIN_USERNAME` + `ADMIN_PASSWORD_HASH` for privileged access (diagnostics, full project visibility, etc.).

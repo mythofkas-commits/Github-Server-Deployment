@@ -5,7 +5,8 @@
   "scripts": {
     "doctor:secrets": "node scripts/secretsDoctor.js",
     "doctor:backend": "node scripts/backendDoctor.js",
-    "inspect:runtime-env": "node scripts/inspectRuntimeEnv.js"
+    "inspect:runtime-env": "node scripts/inspectRuntimeEnv.js",
+    "setup:admin": "node scripts/setupAdmin.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
