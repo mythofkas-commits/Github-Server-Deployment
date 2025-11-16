@@ -655,7 +655,7 @@ const DeploymentDashboard = () => {
     }
   };
 
-  const AuthView = () => (
+  const renderAuthView = () => (
     <div className="max-w-2xl mx-auto">
       <div className="bg-white rounded-2xl shadow-xl border border-gray-200 p-8">
         <div className="mb-6">
@@ -1368,7 +1368,7 @@ const DeploymentDashboard = () => {
               {view === 'settings' && <SettingsView />}
             </>
           ) : (
-            <AuthView />
+            renderAuthView()
           )}
         </div>
       </div>

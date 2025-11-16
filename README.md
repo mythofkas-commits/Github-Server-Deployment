@@ -95,6 +95,7 @@ Systemd/PM2 service should run `PORT=3002 node server.js` and nginx must proxy `
 The React app sits in `frontend/`. Key env var:
 
 - `REACT_APP_API_BASE` – API base (e.g. `http://localhost:3002/api`). Defaults to `/deployer/api` in production and `http://localhost:3002/api` when served from `localhost`.
+- Production builds include `frontend/.env.production` which pins `REACT_APP_API_BASE=/deployer/api`; adjust that file if you serve the dashboard from a different subpath or domain.
 
 Build/run:
 
