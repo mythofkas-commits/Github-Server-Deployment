@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Play, Settings, GitBranch, Server, Globe, Plus, Upload, Eye, Clock, Trash2, RotateCcw, Terminal, FileText } from 'lucide-react';
 
 const normalizeApiBase = (base) => {
@@ -69,8 +69,11 @@ const detectApiBase = () => {
 };
 
 const API_BASE = detectApiBase();
+const AUTH_ERROR_CODE = 'AUTH_REQUIRED';
+const MIN_PASSWORD_LENGTH = 8;
 
 const DeploymentDashboard = () => {
+  const [auth, setAuth] = useState({ checked: false, authenticated: false, user: null });
   const [projects, setProjects] = useState([]);
   const [view, setView] = useState('dashboard');
   const [selectedProject, setSelectedProject] = useState(null);
@@ -86,6 +89,20 @@ const DeploymentDashboard = () => {
   const [envEntries, setEnvEntries] = useState([{ key: '', value: '', isSecret: false, hasValue: false, id: 'env-0' }]);
   const [envSaving, setEnvSaving] = useState(false);
   const [envAlert, setEnvAlert] = useState({ type: '', message: '' });
+  const [projectError, setProjectError] = useState('');
+  const [loginForm, setLoginForm] = useState({ username: '', password: '', loading: false, error: '' });
+  const [signupForm, setSignupForm] = useState({ username: '', password: '', confirmPassword: '', loading: false, error: '' });
+  const [authTab, setAuthTab] = useState('login');
+  const [templates, setTemplates] = useState([]);
+  const templateMap = useMemo(() => {
+    const map = new Map();
+    templates.forEach((tpl) => {
+      if (tpl?.id) {
+        map.set(tpl.id, tpl);
+      }
+    });
+    return map;
+  }, [templates]);
 
   // SAFETY: track pending timeouts to avoid setState on unmounted component
   const timeoutsRef = useRef(new Map());
@@ -97,43 +114,193 @@ const DeploymentDashboard = () => {
     id: entry.id || `env-${Math.random().toString(36).slice(2)}`
   }), []);
 
+  const handleUnauthorized = useCallback(() => {
+    setAuth({ checked: true, authenticated: false, user: null });
+    setProjects([]);
+    setSelectedProject(null);
+    setView('dashboard');
+    setDeploymentStatus({});
+    setDeploymentHistory({});
+    setDeployingProjects(new Set());
+    setLogViewer({ open: false, deploymentId: null, content: '', loading: false, error: '' });
+    setProjectError('');
+    setLoginForm(prev => ({ ...prev, error: '', loading: false, password: '' }));
+    setSignupForm({ username: '', password: '', confirmPassword: '', loading: false, error: '' });
+    setAuthTab('login');
+  }, []);
+
+  const apiFetch = useCallback(async (url, options = {}) => {
+    const init = {
+      credentials: 'include',
+      ...options
+    };
+    const headers = { ...(options.headers || {}) };
+    const hasContentType = Object.keys(headers).some((key) => key.toLowerCase() === 'content-type');
+    if (init.body && !(init.body instanceof FormData) && !hasContentType) {
+      headers['Content-Type'] = 'application/json';
+    }
+    init.headers = headers;
+    const response = await fetch(url, init);
+    if (response.status === 401) {
+      handleUnauthorized();
+      const error = new Error(AUTH_ERROR_CODE);
+      error.code = AUTH_ERROR_CODE;
+      throw error;
+    }
+    return response;
+  }, [handleUnauthorized]);
+
+  const loadTemplates = useCallback(async () => {
+    try {
+      const res = await apiFetch(`${API_BASE}/command-templates`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setTemplates(Array.isArray(data) ? data : []);
+    } catch (error) {
+      if (error?.code === AUTH_ERROR_CODE) return;
+      console.error('Failed to load command templates', error);
+    }
+  }, [apiFetch]);
+
+  const refreshAuth = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/me`, { credentials: 'include' });
+      if (!res.ok) {
+        setAuth({ checked: true, authenticated: false, user: null });
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      const user = data?.user ? {
+        id: data.user.id,
+        username: data.user.username,
+        role: data.user.role,
+        isAdmin: !!data.user.isAdmin
+      } : null;
+      setAuth({ checked: true, authenticated: true, user });
+    } catch {
+      setAuth({ checked: true, authenticated: false, user: null });
+    }
+  }, []);
+
   const loadProjects = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE}/projects`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setProjectError('');
+      const response = await apiFetch(`${API_BASE}/projects`);
       const data = await response.json().catch(() => {
         throw new Error('Invalid JSON from /projects');
       });
       setProjects(Array.isArray(data) ? data : []);
-    } catch {
-      // Fallback demo data on failure (kept from your original)
-      setProjects([
-        { id: 1, name: 'portfolio-site', repo: 'username/portfolio-site', status: 'success', lastDeploy: '2 hours ago', branch: 'main', target: 'server', stack: ['React', 'TypeScript'], buildCommand: 'npm run build', deployPath: '/var/www/portfolio' },
-        { id: 2, name: 'api-gateway', repo: 'username/api-gateway', status: 'success', lastDeploy: '1 day ago', branch: 'main', target: 'server', stack: ['Node.js', 'Express'], buildCommand: 'npm install', deployPath: '/var/www/api' },
-        { id: 3, name: 'docs-website', repo: 'username/docs-website', status: 'failed', lastDeploy: '1 day ago', branch: 'main', target: 'github-pages', stack: ['HTML', 'CSS', 'JavaScript'], buildCommand: 'npm run build', deployPath: 'gh-pages' }
-      ]);
+    } catch (error) {
+      if (error?.code === AUTH_ERROR_CODE) return;
+      console.error('Failed to load projects', error);
+      setProjectError('Failed to load projects. Please try again.');
     }
-  }, []);
+  }, [apiFetch]);
 
-  useEffect(() => { loadProjects(); }, [loadProjects]);
+  const handleLogin = async (event) => {
+    event?.preventDefault?.();
+    setLoginForm(prev => ({ ...prev, loading: true, error: '' }));
+    try {
+      const res = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ username: loginForm.username, password: loginForm.password })
+      });
+      if (!res.ok) {
+        const detail = await describeHttpError(res);
+        throw new Error(detail || 'Invalid credentials');
+      }
+      await refreshAuth();
+      setLoginForm(prev => ({ ...prev, password: '', loading: false, error: '' }));
+      setView('dashboard');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Login failed';
+      setLoginForm(prev => ({ ...prev, loading: false, error: message }));
+    }
+  };
+
+  const handleSignup = async (event) => {
+    event?.preventDefault?.();
+    if (!signupForm.username || !signupForm.password) {
+      setSignupForm(prev => ({ ...prev, error: 'Username and password are required' }));
+      return;
+    }
+    if (signupForm.password.length < MIN_PASSWORD_LENGTH) {
+      setSignupForm(prev => ({ ...prev, error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` }));
+      return;
+    }
+    if (signupForm.password !== signupForm.confirmPassword) {
+      setSignupForm(prev => ({ ...prev, error: 'Passwords do not match' }));
+      return;
+    }
+    setSignupForm(prev => ({ ...prev, loading: true, error: '' }));
+    try {
+      const res = await fetch(`${API_BASE}/users/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ username: signupForm.username, password: signupForm.password })
+      });
+      if (!res.ok) {
+        const detail = await describeHttpError(res);
+        throw new Error(detail || 'Signup failed');
+      }
+      await refreshAuth();
+      setSignupForm({ username: '', password: '', confirmPassword: '', loading: false, error: '' });
+      setView('dashboard');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Signup failed';
+      setSignupForm(prev => ({ ...prev, loading: false, error: message }));
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
+    } catch {
+      // ignore network/logout errors
+    } finally {
+      handleUnauthorized();
+    }
+  };
+
+  useEffect(() => { refreshAuth(); }, [refreshAuth]);
+
+  useEffect(() => {
+    if (auth.authenticated) {
+      loadProjects();
+    } else {
+      setProjects([]);
+    }
+  }, [auth.authenticated, loadProjects]);
+
+  useEffect(() => {
+    if (auth.authenticated) {
+      loadTemplates();
+    } else {
+      setTemplates([]);
+    }
+  }, [auth.authenticated, loadTemplates]);
 
   const fetchProjectDeployments = useCallback(async (projectId) => {
     if (!projectId) return;
     try {
-      const res = await fetch(`${API_BASE}/projects/${projectId}/deployments?limit=10`);
+      const res = await apiFetch(`${API_BASE}/projects/${projectId}/deployments?limit=10`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setDeploymentHistory(prev => ({ ...prev, [projectId]: Array.isArray(data) ? data : [] }));
     } catch (error) {
+      if (error?.code === AUTH_ERROR_CODE) return;
       console.error('Failed to load deployments', error);
     }
-  }, []);
+  }, [apiFetch]);
 
   const pollDeployment = useCallback((projectId, deploymentId) => {
     if (!projectId || !deploymentId) return;
     const poll = async () => {
       try {
-        const res = await fetch(`${API_BASE}/deployments/${deploymentId}`);
+        const res = await apiFetch(`${API_BASE}/deployments/${deploymentId}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         setDeploymentStatus(prev => ({ ...prev, [projectId]: data }));
@@ -155,6 +322,9 @@ const DeploymentDashboard = () => {
           timeoutsRef.current.set(deploymentId, timeout);
         }
       } catch (error) {
+        if (error?.code === AUTH_ERROR_CODE) {
+          return;
+        }
         console.error('Failed to poll deployment', error);
         const existingTimeout = timeoutsRef.current.get(deploymentId);
         if (existingTimeout) {
@@ -174,10 +344,15 @@ const DeploymentDashboard = () => {
 
   const fetchProjectDetail = useCallback(async (projectId) => {
     if (!projectId) return null;
-    const res = await fetch(`${API_BASE}/projects/${projectId}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
-  }, []);
+    try {
+      const res = await apiFetch(`${API_BASE}/projects/${projectId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    } catch (error) {
+      if (error?.code === AUTH_ERROR_CODE) return null;
+      throw error;
+    }
+  }, [apiFetch]);
 
   // SAFETY: clear any pending timers on unmount
   useEffect(() => {
@@ -205,6 +380,7 @@ const DeploymentDashboard = () => {
       description: selectedProject.description || '',
       repoUrl: selectedProject.repo || '',
       branch: selectedProject.branch || '',
+      templateId: selectedProject.templateId || '',
       buildCommand: selectedProject.buildCommand || '',
       buildOutput: selectedProject.buildOutput || '',
       installCommand: selectedProject.installCommand || '',
@@ -245,16 +421,18 @@ const DeploymentDashboard = () => {
     setSelectedProject(prev => (prev?.id === projectId ? { ...prev, status: 'deploying', lastDeploy: 'Deploying now' } : prev));
 
     try {
-      const res = await fetch(`${API_BASE}/projects/${projectId}/deploy`, {
+      const res = await apiFetch(`${API_BASE}/projects/${projectId}/deploy`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(options)
+        body: JSON.stringify(options || {})
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setDeploymentStatus(prev => ({ ...prev, [projectId]: data }));
       pollDeployment(projectId, data.deploymentId);
     } catch (error) {
+      if (error?.code === AUTH_ERROR_CODE) {
+        return;
+      }
       const message = error instanceof Error ? error.message : 'Failed to start deployment';
       alert(message);
       setDeploymentStatus(prev => ({ ...prev, [projectId]: { status: 'failed', error: message } }));
@@ -273,12 +451,13 @@ const DeploymentDashboard = () => {
     if (!window.confirm('Rollback to the previous release?')) return;
     setRollbackLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/projects/${projectId}/rollback`, { method: 'POST' });
+      const res = await apiFetch(`${API_BASE}/projects/${projectId}/rollback`, { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await fetchProjectDeployments(projectId);
       await loadProjects();
       alert('Rollback completed and nginx reloaded.');
     } catch (error) {
+      if (error?.code === AUTH_ERROR_CODE) return;
       const message = error instanceof Error ? error.message : 'Rollback failed';
       alert(message);
     } finally {
@@ -290,11 +469,14 @@ const DeploymentDashboard = () => {
     if (!deploymentId) return;
     setLogViewer({ open: true, deploymentId, content: '', loading: true, error: '' });
     try {
-      const res = await fetch(`${API_BASE}/deployments/${deploymentId}/log`);
+      const res = await apiFetch(`${API_BASE}/deployments/${deploymentId}/log`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
       setLogViewer({ open: true, deploymentId, content: text || 'No logs available yet.', loading: false, error: '' });
     } catch (error) {
+      if (error?.code === AUTH_ERROR_CODE) {
+        return;
+      }
       const message = error instanceof Error ? error.message : 'Unable to load logs';
       setLogViewer({ open: true, deploymentId, content: '', loading: false, error: message });
     }
@@ -316,7 +498,9 @@ const DeploymentDashboard = () => {
         }
       }
     } catch (error) {
-      console.error('Failed to load project detail', error);
+      if (error?.code !== AUTH_ERROR_CODE) {
+        console.error('Failed to load project detail', error);
+      }
     }
   }, [fetchProjectDetail, fetchProjectDeployments]);
 
@@ -324,11 +508,12 @@ const DeploymentDashboard = () => {
     if (!projectId) return; // SAFETY
     if (!window.confirm('Are you sure you want to delete this project?')) return;
     try {
-      const res = await fetch(`${API_BASE}/projects/${projectId}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_BASE}/projects/${projectId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setProjects(prev => prev.filter(p => p.id !== projectId));
       if (selectedProject?.id === projectId) { setSelectedProject(null); setView('dashboard'); }
     } catch (err) {
+      if (err?.code === AUTH_ERROR_CODE) return;
       alert('Failed to delete: ' + (err?.message || 'Unknown error'));
     }
   };
@@ -347,20 +532,22 @@ const DeploymentDashboard = () => {
         description: settingsForm.description?.trim(),
         repoUrl: settingsForm.repoUrl?.trim(),
         branch: settingsForm.branch?.trim(),
-        buildCommand: settingsForm.buildCommand?.trim(),
         buildOutput: settingsForm.buildOutput?.trim(),
-        installCommand: settingsForm.installCommand || '',
-        testCommand: settingsForm.testCommand || '',
-        startCommand: settingsForm.startCommand || '',
         deployPath: settingsForm.deployPath?.trim(),
         runtime: settingsForm.runtime,
         domain: settingsForm.domain?.trim(),
         port: settingsForm.port ? Number(settingsForm.port) : null,
-        target: settingsForm.target
+        target: settingsForm.target,
+        templateId: settingsForm.templateId || ''
       };
-      const res = await fetch(`${API_BASE}/projects/${selectedProject.id}`, {
+      if (auth.user?.role === 'admin') {
+        payload.buildCommand = settingsForm.buildCommand?.trim();
+        payload.installCommand = settingsForm.installCommand || '';
+        payload.testCommand = settingsForm.testCommand || '';
+        payload.startCommand = settingsForm.startCommand || '';
+      }
+      const res = await apiFetch(`${API_BASE}/projects/${selectedProject.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       if (!res.ok) {
@@ -372,6 +559,7 @@ const DeploymentDashboard = () => {
       setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
       setSettingsAlert({ type: 'success', message: 'Settings saved' });
     } catch (error) {
+      if (error?.code === AUTH_ERROR_CODE) return;
       const message = error instanceof Error ? error.message : 'Failed to save settings';
       setSettingsAlert({ type: 'error', message });
     } finally {
@@ -433,9 +621,8 @@ const DeploymentDashboard = () => {
         }
         return base;
       });
-      const res = await fetch(`${API_BASE}/projects/${selectedProject.id}`, {
+      const res = await apiFetch(`${API_BASE}/projects/${selectedProject.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ env: envPayload })
       });
       if (!res.ok) {
@@ -447,12 +634,126 @@ const DeploymentDashboard = () => {
       setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
       setEnvAlert({ type: 'success', message: 'Environment updated' });
     } catch (error) {
+      if (error?.code === AUTH_ERROR_CODE) return;
       const message = error instanceof Error ? error.message : 'Failed to save environment';
       setEnvAlert({ type: 'error', message });
     } finally {
       setEnvSaving(false);
     }
   };
+
+  const AuthView = () => (
+    <div className="max-w-2xl mx-auto">
+      <div className="bg-white rounded-2xl shadow-xl border border-gray-200 p-8">
+        <div className="mb-6">
+          <h2 className="text-2xl font-bold text-gray-900">Deployment Dashboard</h2>
+          <p className="text-gray-600 mt-1">Sign in with your admin account or create a user account to manage your own projects.</p>
+        </div>
+        <div className="flex gap-3 mb-6">
+          <button
+            className={`flex-1 py-2 rounded-lg font-semibold transition-colors ${authTab === 'login' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'}`}
+            onClick={() => setAuthTab('login')}
+            type="button"
+          >
+            Login
+          </button>
+          <button
+            className={`flex-1 py-2 rounded-lg font-semibold transition-colors ${authTab === 'signup' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'}`}
+            onClick={() => setAuthTab('signup')}
+            type="button"
+          >
+            Sign up
+          </button>
+        </div>
+        {authTab === 'login' ? (
+          <form onSubmit={handleLogin} className="space-y-4">
+            {loginForm.error && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+                {loginForm.error}
+              </div>
+            )}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+              <input
+                type="text"
+                value={loginForm.username}
+                onChange={(e) => setLoginForm(prev => ({ ...prev, username: e.target.value }))}
+                className="w-full px-4 py-2 border-2 border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none"
+                autoComplete="username"
+                placeholder="admin"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+              <input
+                type="password"
+                value={loginForm.password}
+                onChange={(e) => setLoginForm(prev => ({ ...prev, password: e.target.value }))}
+                className="w-full px-4 py-2 border-2 border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none"
+                autoComplete="current-password"
+                placeholder="••••••••"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={loginForm.loading || !loginForm.username || !loginForm.password}
+              className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed font-semibold transition-colors"
+            >
+              {loginForm.loading ? 'Signing in…' : 'Sign in'}
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handleSignup} className="space-y-4">
+            {signupForm.error && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+                {signupForm.error}
+              </div>
+            )}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+              <input
+                type="text"
+                value={signupForm.username}
+                onChange={(e) => setSignupForm(prev => ({ ...prev, username: e.target.value }))}
+                className="w-full px-4 py-2 border-2 border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none"
+                autoComplete="username"
+                placeholder="your-name"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+              <input
+                type="password"
+                value={signupForm.password}
+                onChange={(e) => setSignupForm(prev => ({ ...prev, password: e.target.value }))}
+                className="w-full px-4 py-2 border-2 border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none"
+                autoComplete="new-password"
+                placeholder="••••••••"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Confirm Password</label>
+              <input
+                type="password"
+                value={signupForm.confirmPassword}
+                onChange={(e) => setSignupForm(prev => ({ ...prev, confirmPassword: e.target.value }))}
+                className="w-full px-4 py-2 border-2 border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none"
+                autoComplete="new-password"
+                placeholder="Repeat password"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={signupForm.loading || !signupForm.username || !signupForm.password || !signupForm.confirmPassword}
+              className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed font-semibold transition-colors"
+            >
+              {signupForm.loading ? 'Creating account…' : 'Create account'}
+            </button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
 
   const DashboardView = () => (
     <div className="space-y-6">
@@ -470,11 +771,19 @@ const DeploymentDashboard = () => {
           </button>
         </div>
       </div>
-
+      {projectError && (
+        <div className="rounded-lg border-2 border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {projectError}
+        </div>
+      )}
       <div className="grid gap-4">
         {projects.map(project => {
           const liveStatus = deploymentStatus[project.id]?.status || project.status;
           const statusLabel = liveStatus ? liveStatus.toString() : 'unknown';
+          const isAdminProject = !project.ownerId || project.ownerId === 'admin';
+          const templateLabel = project.templateId
+            ? (templateMap.get(project.templateId)?.label || project.templateId)
+            : (isAdminProject ? 'Custom commands (admin)' : null);
           return (
           <div key={project.id} className="bg-white rounded-lg border-2 border-gray-200 p-5 hover:border-blue-300 transition-all">
             <div className="flex items-start justify-between">
@@ -497,6 +806,9 @@ const DeploymentDashboard = () => {
                 <div className="flex items-center gap-2 mb-2">
                   {project.stack?.map((tech, i) => <span key={i} className="px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs font-medium">{tech}</span>)}
                 </div>
+                {templateLabel && (
+                  <p className="text-xs text-gray-500 mb-1">Template: {templateLabel}</p>
+                )}
                 <p className="text-sm text-gray-500">Last deployed: {project.lastDeploy || 'Never'}</p>
                 {deploymentStatus[project.id]?.error && (
                   <p className="text-xs text-red-600 mt-1">Error: {deploymentStatus[project.id].error}</p>
@@ -527,10 +839,14 @@ const DeploymentDashboard = () => {
       if (!formData.name) return;
       setLoading(true);
       try {
-        const res = await fetch(`${API_BASE}/projects/create`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) });
+        const res = await apiFetch(`${API_BASE}/projects/create`, { method: 'POST', body: JSON.stringify(formData) });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         await loadProjects();
         setView('dashboard');
+      } catch (error) {
+        if (error?.code === AUTH_ERROR_CODE) return;
+        console.error('Failed to create project', error);
+        alert(error?.message || 'Failed to create project');
       } finally {
         setLoading(false);
       }
@@ -555,6 +871,7 @@ const DeploymentDashboard = () => {
   };
 
   const ImportProjectView = () => {
+    const isAdminUser = auth.user?.role === 'admin';
     const [formData, setFormData] = useState({
       repoUrl: '',
       branch: 'main',
@@ -567,11 +884,17 @@ const DeploymentDashboard = () => {
       startCommand: '',
       runtime: 'static',
       domain: '',
-      port: ''
+      port: '',
+      templateId: ''
     });
     const [envText, setEnvText] = useState('');
     const [showAdvanced, setShowAdvanced] = useState(false);
     const [importError, setImportError] = useState('');
+    useEffect(() => {
+      if (!isAdminUser && templates.length && !formData.templateId) {
+        setFormData((prev) => ({ ...prev, templateId: templates[0].id }));
+      }
+    }, [isAdminUser, templates, formData.templateId]);
 
     const handleImport = async () => {
       const normalizedRepoUrl = sanitizeGitHubRepoUrl(formData.repoUrl);
@@ -588,10 +911,26 @@ const DeploymentDashboard = () => {
           acc[key.trim()] = rest.join('=').trim();
           return acc;
         }, {});
-        const payload = { ...formData, repoUrl: normalizedRepoUrl, env };
-        const res = await fetch(`${API_BASE}/projects/import`, {
+        const payload = {
+          repoUrl: normalizedRepoUrl,
+          branch: formData.branch,
+          target: formData.target,
+          buildOutput: formData.buildOutput,
+          deployPath: formData.deployPath,
+          runtime: formData.runtime,
+          domain: formData.domain,
+          port: formData.port ? Number(formData.port) : '',
+          templateId: formData.templateId || undefined,
+          env
+        };
+        if (isAdminUser) {
+          payload.buildCommand = formData.buildCommand;
+          payload.installCommand = formData.installCommand;
+          payload.testCommand = formData.testCommand;
+          payload.startCommand = formData.startCommand;
+        }
+        const res = await apiFetch(`${API_BASE}/projects/import`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
         if (!res.ok) {
@@ -601,6 +940,7 @@ const DeploymentDashboard = () => {
         await loadProjects();
         setView('dashboard');
       } catch (error) {
+        if (error?.code === AUTH_ERROR_CODE) return;
         const message = error instanceof Error ? error.message : 'Import failed';
         setImportError(message || 'Import failed');
       } finally {
@@ -615,6 +955,44 @@ const DeploymentDashboard = () => {
           <h2 className="text-2xl font-bold text-gray-900 mb-6">Import Existing Project</h2>
           <div className="space-y-5">
             <div><label className="block text-sm font-medium text-gray-700 mb-2">GitHub Repository URL</label><input type="text" value={formData.repoUrl} onChange={(e) => setFormData(prev => ({ ...prev, repoUrl: e.target.value }))} placeholder="https://github.com/username/repo-name" className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" /></div>
+            {!isAdminUser && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Command Template</label>
+                <select
+                  value={formData.templateId}
+                  onChange={(e) => setFormData(prev => ({ ...prev, templateId: e.target.value }))}
+                  className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                  disabled={!templates.length}
+                >
+                  {!templates.length && <option value="">No templates available</option>}
+                  {templates.map((tpl) => (
+                    <option key={tpl.id} value={tpl.id}>
+                      {tpl.label}
+                    </option>
+                  ))}
+                </select>
+                {!templates.length && (
+                  <p className="text-xs text-amber-600 mt-1">No command templates configured yet. Ask an admin to define templates.</p>
+                )}
+              </div>
+            )}
+            {isAdminUser && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Command Template (optional)</label>
+                <select
+                  value={formData.templateId}
+                  onChange={(e) => setFormData(prev => ({ ...prev, templateId: e.target.value }))}
+                  className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                >
+                  <option value="">Custom (no template)</option>
+                  {templates.map((tpl) => (
+                    <option key={tpl.id} value={tpl.id}>
+                      {tpl.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="grid md:grid-cols-2 gap-4">
               <div><label className="block text-sm font-medium text-gray-700 mb-2">Branch</label><input type="text" value={formData.branch} onChange={(e) => setFormData(prev => ({ ...prev, branch: e.target.value }))} placeholder="main" className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" /></div>
               <div><label className="block text-sm font-medium text-gray-700 mb-2">Deployment Target</label><select value={formData.target} onChange={(e) => setFormData(prev => ({ ...prev, target: e.target.value }))} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"><option value="server">Your Nginx Server</option><option value="github-pages">GitHub Pages</option><option value="both">Both</option></select></div>
@@ -629,26 +1007,28 @@ const DeploymentDashboard = () => {
               <div><label className="block text-sm font-medium text-gray-700 mb-2">Custom Domain</label><input type="text" value={formData.domain} onChange={(e) => setFormData(prev => ({ ...prev, domain: e.target.value }))} placeholder="app.example.com" className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" /></div>
             </div>
             <div><label className="block text-sm font-medium text-gray-700 mb-2">App Port (Node runtime)</label><input type="text" value={formData.port} onChange={(e) => setFormData(prev => ({ ...prev, port: e.target.value }))} placeholder="e.g. 4173" className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" /></div>
-            <button type="button" className="text-sm text-blue-600 font-medium" onClick={() => setShowAdvanced(prev => !prev)}>
-              {showAdvanced ? 'Hide Advanced Options' : 'Show Advanced Options'}
-            </button>
-            {showAdvanced && (
+            {isAdminUser && (
+              <button type="button" className="text-sm text-blue-600 font-medium" onClick={() => setShowAdvanced(prev => !prev)}>
+                {showAdvanced ? 'Hide Advanced Options' : 'Show Advanced Options'}
+              </button>
+            )}
+            {isAdminUser && showAdvanced && (
               <div className="space-y-4 border-2 border-gray-200 rounded-lg p-4">
                 <div className="grid md:grid-cols-2 gap-4">
                   <div><label className="block text-sm font-medium text-gray-700 mb-2">Install Command</label><input type="text" value={formData.installCommand} onChange={(e) => setFormData(prev => ({ ...prev, installCommand: e.target.value }))} placeholder="npm ci" className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" /></div>
                   <div><label className="block text-sm font-medium text-gray-700 mb-2">Test Command</label><input type="text" value={formData.testCommand} onChange={(e) => setFormData(prev => ({ ...prev, testCommand: e.target.value }))} placeholder="npm test" className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" /></div>
                 </div>
                 <div><label className="block text-sm font-medium text-gray-700 mb-2">Start Command (Node runtime)</label><input type="text" value={formData.startCommand} onChange={(e) => setFormData(prev => ({ ...prev, startCommand: e.target.value }))} placeholder="npm run start:prod" className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" /></div>
-                <div><label className="block text-sm font-medium text-gray-700 mb-2">Environment Variables (KEY=VALUE per line)</label><textarea value={envText} onChange={(e) => setEnvText(e.target.value)} rows={4} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" placeholder="API_URL=https://api.example.com&#10;NODE_ENV=production" /></div>
               </div>
             )}
+            <div><label className="block text-sm font-medium text-gray-700 mb-2">Environment Variables (KEY=VALUE per line)</label><textarea value={envText} onChange={(e) => setEnvText(e.target.value)} rows={4} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" placeholder="API_URL=https://api.example.com&#10;NODE_ENV=production" /></div>
             <div className="bg-green-50 border-2 border-green-200 rounded-lg p-4"><h4 className="font-semibold text-green-900 mb-2">System will auto-detect:</h4><ul className="text-sm text-green-800 space-y-1"><li>✓ Tech stack (package.json, requirements.txt, composer.json)</li><li>✓ Build commands if not specified</li><li>✓ Optimal deployment configuration</li></ul></div>
             {importError && (
               <div className="rounded-lg border-2 border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {importError}
               </div>
             )}
-            <button onClick={handleImport} disabled={loading || !formData.repoUrl} className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed font-medium transition-colors">{loading ? 'Importing...' : 'Import & Setup'}</button>
+            <button onClick={handleImport} disabled={loading || !formData.repoUrl || (!isAdminUser && !formData.templateId)} className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed font-medium transition-colors">{loading ? 'Importing...' : 'Import & Setup'}</button>
           </div>
         </div>
       </div>
@@ -758,7 +1138,35 @@ const DeploymentDashboard = () => {
                     <div>
                       <h3 className="font-semibold text-gray-900 mb-3">Build Configuration</h3>
                       <div className="space-y-3">
-                        <div><label className="block text-sm font-medium text-gray-700 mb-1">Build Command</label><input type="text" value={settingsForm.buildCommand} onChange={(e) => updateSettingsField('buildCommand', e.target.value)} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" /></div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Command Template</label>
+                          <select
+                            value={settingsForm.templateId || ''}
+                            onChange={(e) => updateSettingsField('templateId', e.target.value)}
+                            className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            disabled={!templates.length && !auth.user?.isAdmin}
+                          >
+                            {auth.user?.role === 'admin' && <option value="">Custom (no template)</option>}
+                            {templates.map((tpl) => (
+                              <option key={tpl.id} value={tpl.id}>{tpl.label}</option>
+                            ))}
+                            {!templates.length && auth.user?.role !== 'admin' && <option value="">No templates available</option>}
+                          </select>
+                          {!templates.length && auth.user?.role !== 'admin' && (
+                            <p className="text-xs text-amber-600 mt-1">Ask an admin to add templates.</p>
+                          )}
+                          {auth.user?.role !== 'admin' && (
+                            <p className="text-xs text-gray-500 mt-1">Commands are managed by the selected template.</p>
+                          )}
+                        </div>
+                        {auth.user?.role === 'admin' && (
+                          <>
+                            <div><label className="block text-sm font-medium text-gray-700 mb-1">Build Command</label><input type="text" value={settingsForm.buildCommand} onChange={(e) => updateSettingsField('buildCommand', e.target.value)} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" /></div>
+                            <div><label className="block text-sm font-medium text-gray-700 mb-1">Install Command</label><input type="text" value={settingsForm.installCommand} onChange={(e) => updateSettingsField('installCommand', e.target.value)} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" /></div>
+                            <div><label className="block text-sm font-medium text-gray-700 mb-1">Test Command</label><input type="text" value={settingsForm.testCommand} onChange={(e) => updateSettingsField('testCommand', e.target.value)} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" /></div>
+                            <div><label className="block text-sm font-medium text-gray-700 mb-1">Start Command (Node runtime)</label><input type="text" value={settingsForm.startCommand} onChange={(e) => updateSettingsField('startCommand', e.target.value)} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" /></div>
+                          </>
+                        )}
                         <div><label className="block text-sm font-medium text-gray-700 mb-1">Output Directory</label><input type="text" value={settingsForm.buildOutput} onChange={(e) => updateSettingsField('buildOutput', e.target.value)} className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none" /></div>
                       </div>
                     </div>
@@ -899,22 +1307,59 @@ const DeploymentDashboard = () => {
     );
   };
 
+  if (!auth.checked) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8 flex items-center justify-center">
+        <div className="text-center text-gray-600">
+          <Server className="w-10 h-10 mx-auto mb-4 text-blue-600 animate-pulse" />
+          <p className="text-lg font-semibold">Checking authentication…</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
         <div className="max-w-7xl mx-auto">
-          <header className="mb-8">
-            <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3"><Server className="w-8 h-8 text-blue-600" />Deployment Dashboard</h1>
-            <p className="text-gray-600 mt-1">Automated deployment system for your projects</p>
-          </header>
-          {view === 'dashboard' && <DashboardView />}
-          {view === 'create' && <CreateProjectView />}
-          {view === 'import' && <ImportProjectView />}
-          {view === 'logs' && <LogsView />}
-          {view === 'settings' && <SettingsView />}
+          {auth.authenticated ? (
+            <>
+              <header className="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
+                    <Server className="w-8 h-8 text-blue-600" />
+                    Deployment Dashboard
+                  </h1>
+                  <p className="text-gray-600 mt-1">Automated deployment system for your projects</p>
+                </div>
+                <div className="flex items-center gap-4 self-start md:self-auto">
+                  {auth.user && (
+                    <div className="text-right">
+                      <p className="text-xs uppercase tracking-wide text-gray-500">Signed in as</p>
+                      <p className="text-base font-semibold text-gray-900">{auth.user.username}</p>
+                      <p className="text-xs text-gray-500">{auth.user.role === 'admin' ? 'Platform admin' : 'Project owner'}</p>
+                    </div>
+                  )}
+                  <button
+                    onClick={handleLogout}
+                    className="px-4 py-2 border-2 border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:border-red-500 hover:text-red-600 transition-colors"
+                  >
+                    Logout
+                  </button>
+                </div>
+              </header>
+              {view === 'dashboard' && <DashboardView />}
+              {view === 'create' && <CreateProjectView />}
+              {view === 'import' && <ImportProjectView />}
+              {view === 'logs' && <LogsView />}
+              {view === 'settings' && <SettingsView />}
+            </>
+          ) : (
+            <AuthView />
+          )}
         </div>
       </div>
-      {logViewer.open && (
+      {auth.authenticated && logViewer.open && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col">
             <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200">

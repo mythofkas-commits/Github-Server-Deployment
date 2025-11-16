@@ -7,10 +7,13 @@ const deploymentStore = require('./deploymentStore');
 const nginxManager = require('./nginxManager');
 const { runCommand, runShellCommand } = require('./command');
 const { buildEnvMaps } = require('./envBuilder');
+const { getTemplate } = require('./commandTemplates');
 
 const queue = [];
 let active = 0;
 const MAX_CONCURRENT = Math.max(1, config.MAX_CONCURRENT_DEPLOYS || 1);
+const MAX_QUEUE_SIZE = Math.max(1, config.MAX_QUEUE_SIZE || 50);
+const ADMIN_OWNER_ID = 'admin';
 
 const pathExists = async (target) => {
   try {
@@ -19,6 +22,30 @@ const pathExists = async (target) => {
   } catch {
     return false;
   }
+};
+
+const ensureWithinBase = (baseDir, candidate, fieldName) => {
+  const normalizedBase = path.resolve(baseDir);
+  const resolved = path.resolve(normalizedBase, candidate || '.');
+  if (resolved === normalizedBase) {
+    return resolved;
+  }
+  if (!resolved.startsWith(`${normalizedBase}${path.sep}`)) {
+    throw new Error(`${fieldName} must stay within the project repository`);
+  }
+  return resolved;
+};
+
+const ensureDeployPathWithinRoot = (deployPath) => {
+  const root = path.resolve(config.NGINX_ROOT);
+  const resolved = path.resolve(deployPath);
+  if (resolved === root) {
+    return resolved;
+  }
+  if (!resolved.startsWith(`${root}${path.sep}`)) {
+    throw new Error('Deploy path must be inside the nginx root');
+  }
+  return resolved;
 };
 
 const removePath = async (target) => {
@@ -48,14 +75,31 @@ const closeStream = (stream) => new Promise((resolve) => {
 
 async function queueDeployment(projectId, options = {}) {
   const project = await projectStore.getProject(projectId);
+  if (!project?.deployPath) {
+    throw new Error('Project missing deployPath');
+  }
   if (!project) {
     throw new Error('Project not found');
   }
-  if (!project.repo || !project.branch || !project.buildCommand) {
-    throw new Error('Project configuration incomplete (repo, branch, buildCommand required)');
+  if (!project.repo || !project.branch) {
+    throw new Error('Project configuration incomplete (repo and branch required)');
+  }
+  const ownerIsAdmin = (project.ownerId || ADMIN_OWNER_ID) === ADMIN_OWNER_ID;
+  if (ownerIsAdmin) {
+    if (!project.buildCommand) {
+      throw new Error('Project configuration incomplete (buildCommand required)');
+    }
+  } else if (!project.templateId) {
+    throw new Error('Project missing command template');
   }
   if (!project.deployPath) {
     throw new Error('Project missing deployPath');
+  }
+  ensureDeployPathWithinRoot(project.deployPath);
+  if (queue.length + active >= MAX_QUEUE_SIZE) {
+    const error = new Error('Deployment queue is full. Try again later.');
+    error.statusCode = 429;
+    throw error;
   }
 
   const deployment = await deploymentStore.createDeployment(projectId, { dryRun: !!options.dryRun });
@@ -85,8 +129,14 @@ async function runDeployment(job) {
   const startTime = new Date().toISOString();
   await deploymentStore.updateDeployment(deploymentId, { status: 'running', startedAt: startTime });
   const project = await projectStore.getProject(projectId);
-  const repoPath = projectStore.repoDir(projectId);
-  const releasesDir = projectStore.releasesDir(projectId);
+  const repoPath = path.resolve(projectStore.repoDir(projectId));
+  const releasesDir = path.resolve(projectStore.releasesDir(projectId));
+  const safeDeployPath = ensureDeployPathWithinRoot(project.deployPath);
+  const isAdminProject = (project.ownerId || ADMIN_OWNER_ID) === ADMIN_OWNER_ID;
+  const templateCommands = !isAdminProject && project.templateId ? getTemplate(project.templateId) : null;
+  if (!isAdminProject && !templateCommands) {
+    throw new Error('Command template missing or invalid for this project');
+  }
 
   const envEntries = Array.isArray(project.env) ? project.env : [];
   let env;
@@ -162,12 +212,17 @@ async function runDeployment(job) {
     });
 
     await runStep('install', async () => {
-      let installCmd = project.installCommand;
-      if (!installCmd) {
-        const lockExists = await pathExists(path.join(repoPath, 'package-lock.json'));
-        const pkgExists = await pathExists(path.join(repoPath, 'package.json'));
-        if (lockExists) installCmd = 'npm ci';
-        else if (pkgExists) installCmd = 'npm install --production';
+      let installCmd = null;
+      if (isAdminProject) {
+        installCmd = project.installCommand;
+        if (!installCmd) {
+          const lockExists = await pathExists(path.join(repoPath, 'package-lock.json'));
+          const pkgExists = await pathExists(path.join(repoPath, 'package.json'));
+          if (lockExists) installCmd = 'npm ci';
+          else if (pkgExists) installCmd = 'npm install --production';
+        }
+      } else if (templateCommands) {
+        installCmd = templateCommands.installCommand || null;
       }
       if (installCmd) {
         await runShellCommand(installCmd, withRedaction({ cwd: repoPath, env }), logStream, dryRun);
@@ -177,20 +232,27 @@ async function runDeployment(job) {
     });
 
     await runStep('test', async () => {
-      if (!project.testCommand) {
+      const testCmd = isAdminProject ? project.testCommand : (templateCommands ? templateCommands.testCommand : null);
+      if (!testCmd) {
         if (logStream) logStream.write('No test command, skipping\n');
         return;
       }
-      await runShellCommand(project.testCommand, withRedaction({ cwd: repoPath, env }), logStream, dryRun);
+      await runShellCommand(testCmd, withRedaction({ cwd: repoPath, env }), logStream, dryRun);
     });
 
     await runStep('build', async () => {
-      await runShellCommand(project.buildCommand, withRedaction({ cwd: repoPath, env }), logStream, dryRun);
+      const buildCmd = isAdminProject
+        ? (project.buildCommand || 'npm run build')
+        : (templateCommands ? templateCommands.buildCommand : null);
+      if (!buildCmd) {
+        throw new Error('Build command is not configured for this project/template');
+      }
+      await runShellCommand(buildCmd, withRedaction({ cwd: repoPath, env }), logStream, dryRun);
     });
 
     releaseInfo = await runStep('release', async () => {
       const outputDir = project.buildOutputDir || project.buildOutput || config.DEFAULT_BUILD_OUTPUT;
-      const absOutput = path.isAbsolute(outputDir) ? outputDir : path.join(repoPath, outputDir);
+      const absOutput = ensureWithinBase(repoPath, outputDir, 'Build output path');
       if (!dryRun) {
         const exists = await pathExists(absOutput);
         if (!exists) throw new Error(`Build output directory not found: ${absOutput}`);
@@ -218,9 +280,9 @@ async function runDeployment(job) {
         }
         await fsp.rm(currentLink, { force: true }).catch(() => {});
         await fsp.symlink(releasePath, currentLink);
-        await fsp.mkdir(path.dirname(project.deployPath), { recursive: true });
-        await removePath(project.deployPath);
-        await fsp.symlink(releasePath, project.deployPath);
+        await fsp.mkdir(path.dirname(safeDeployPath), { recursive: true });
+        await removePath(safeDeployPath);
+        await fsp.symlink(releasePath, safeDeployPath);
       }
       return { releasePath };
     });
@@ -229,7 +291,7 @@ async function runDeployment(job) {
       await nginxManager.writeConfig(projectId, {
         runtime: runtimeType,
         domain: project.domain,
-        deployPath: project.deployPath,
+        deployPath: safeDeployPath,
         runtimePort
       }, logStream, dryRun);
     });
@@ -239,7 +301,7 @@ async function runDeployment(job) {
         if (logStream) logStream.write('Runtime not node, skipping pm2\n');
         return;
       }
-      const startCmd = project.startCommand;
+      const startCmd = isAdminProject ? project.startCommand : (templateCommands ? templateCommands.startCommand : null);
       if (!startCmd) {
         throw new Error('startCommand required for node runtime');
       }
@@ -292,12 +354,14 @@ async function rollbackProject(projectId) {
   await fsp.symlink(previousTarget, currentLink);
   const project = await projectStore.getProject(projectId);
   if (!project) throw new Error('Project not found');
-  await removePath(project.deployPath);
-  await fsp.symlink(previousTarget, project.deployPath);
+  if (!project.deployPath) throw new Error('Project missing deployPath');
+  const safeDeployPath = ensureDeployPathWithinRoot(project.deployPath);
+  await removePath(safeDeployPath);
+  await fsp.symlink(previousTarget, safeDeployPath);
   await nginxManager.writeConfig(projectId, {
     runtime: project.runtime || 'static',
     domain: project.domain,
-    deployPath: project.deployPath,
+    deployPath: safeDeployPath,
     runtimePort: project.runtimePort || project.port
   });
   if ((project.runtime || 'static') === 'node' && project.startCommand) {

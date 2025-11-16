@@ -24,7 +24,13 @@ The API lives under `api/` (Node 20). Environment variables (`api/.env`):
 | `NGINX_SITES_AVAILABLE` / `NGINX_SITES_ENABLED` | nginx config directories |
 | `PM2_BIN` | pm2 executable (default `pm2`) |
 | `MAX_CONCURRENT_DEPLOYS` | Number of concurrent deploys (default `1`) |
+| `MAX_QUEUE_SIZE` | Maximum queued deployments waiting for workers (default `50`) |
 | `GITHUB_TOKEN`, `GITHUB_USERNAME` | Used for GitHub operations |
+| `ADMIN_USERNAME` | Login username for the dashboard/API (default `admin`) |
+| `ADMIN_PASSWORD_HASH` | bcrypt hash of the admin password (generate via `node -e "console.log(require('bcryptjs').hashSync('super-secret', 12))"`) |
+| `SESSION_SECRET` | Secret used to sign the JWT session cookie |
+| `ALLOWED_ORIGIN` | Browser origin allowed to call the API (e.g. `http://localhost:5173`) |
+| `USERS_FILE` | Path to the JSON file that stores regular user accounts (`./data/users.json` by default) |
 
 Run locally:
 
@@ -35,6 +41,41 @@ PORT=3002 node server.js
 ```
 
 Systemd/PM2 service should run `PORT=3002 node server.js` and nginx must proxy `/deployer/api` to it.
+
+### Security & Auth
+
+- Every dashboard/API call (except `/api/health`) now requires a single-admin login. The backend compares the username/password sent to `/api/auth/login` against `ADMIN_USERNAME` and `ADMIN_PASSWORD_HASH` (bcryptjs).
+- Successful logins receive a signed JWT baked into a `httpOnly` cookie; the frontend always sends it via `credentials: "include"`.
+- `SESSION_SECRET` must be a long random string. Rotate it to invalidate existing sessions.
+- `ALLOWED_ORIGIN` pins CORS to the React dashboard origin. Browsers from any other origin receive `403` and cannot attach cookies.
+- Always serve the dashboard/API over HTTPS (the auth cookie is `secure` in production) and remember that deploy/test scripts still execute with full system privileges—only trusted admins should get credentials.
+- Project build/deploy paths are normalized so user input cannot escape the checked-out repo or configured nginx root.
+
+### Users & authentication
+
+- Admin remains env-based—you are the only platform admin and still use `ADMIN_USERNAME` + `ADMIN_PASSWORD_HASH` for privileged access (diagnostics, full project visibility, etc.).
+- Regular users can self-serve by signing up through the dashboard (or calling `POST /api/users/signup`). Accounts are stored in `USERS_FILE` with bcryptjs hashes.
+- Each project record now tracks an `ownerId`. The API enforces ACLs across **all** project/deploy/log routes so users can only see and operate on their own projects, while admins retain full visibility.
+- Signups/login share the same JWT cookie/session infrastructure so the frontend can seamlessly switch between admin and user roles.
+
+### Command templates
+
+- Regular users pick from predefined command templates (see `api/lib/commandTemplates.js`) instead of entering arbitrary shell commands.
+- Templates such as **Node App (npm)** (`npm ci`, `npm run build`, `npm start`) or **Static SPA (npm)** (`npm ci`, `npm run build`) map cleanly onto the deploy pipeline.
+- Admins can still configure fully custom install/build/test/start commands, or optionally assign a template and then override commands as needed.
+- The deploy engine enforces templates for user-owned projects, ensuring untrusted users cannot run arbitrary host commands.
+
+### Rate limiting & abuse controls
+
+- The API applies a general rate limit of ~200 requests per 5 minutes per IP plus a stricter deploy/rollback limit (10 requests per 5 minutes). Bursts return `429` with a JSON error.
+- Deploy queueing is bounded by `MAX_QUEUE_SIZE`. When the in-memory queue plus active jobs reaches this threshold, new deployments are rejected so one rogue project cannot exhaust memory.
+- Login and signup endpoints are separately rate-limited to slow down brute-force attempts.
+
+### Security notes
+
+- Build/install/test/start commands run with the full privileges of the deploy user—treat every project as trusted code or isolate the server network-wise. There is no container/VM sandbox in this phase.
+- Deploy paths and build outputs are normalized + constrained to the repo/`NGINX_ROOT`, but they still write to the host filesystem. Always review project configuration before granting access.
+- Multi-user support is designed for small groups/teams; harden with HTTPS, firewalls, and monitoring before exposing to untrusted networks.
 
 ### Frontend
 
@@ -102,3 +143,11 @@ Use these endpoints if you want to integrate other tooling or automate deploymen
 - Run `npm run inspect:runtime-env -- <project-id>` (or `node api/scripts/inspectRuntimeEnv.js <project-id>`) to list the runtime env keys that will be injected for a project—useful sanity check before deployments.
 - Run `npm run doctor:backend` to perform a full platform health check. It validates registry data, filesystem/git state, nginx configs, pm2 processes, and deployment history/log presence for every project, summarizing OK/WARN/ERROR statuses without touching secrets.
 - Diagnostics never output plaintext secrets; they only report structural issues so you can fix them before exposing the dashboard to real workloads.
+
+### Testing
+
+- Start the backend (`ADMIN_USERNAME`, `ADMIN_PASSWORD_HASH`, `SESSION_SECRET`, `ALLOWED_ORIGIN`) and frontend, then confirm the login screen appears. Invalid credentials must produce a 401, valid credentials should unlock the dashboard and cookie session.
+- Hit any protected endpoint (e.g. `GET /api/projects`) without cookies and verify it returns 401; repeat from an unapproved origin and confirm CORS blocks it.
+- Attempt to configure a project with a malicious `../` build output or deploy path outside `NGINX_ROOT` and ensure the API refuses to save/deploy it.
+- Hammer `/api/projects/:id/deploy` more than 10x in five minutes or enqueue more deployments than `MAX_QUEUE_SIZE` to confirm the API returns 429 and the queue stays bounded.
+- Run the diagnostics (`npm run doctor:secrets`, `npm run doctor:backend`) to ensure they still pass after the auth changes.

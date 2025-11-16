@@ -89,6 +89,8 @@ async function listProjects() {
       const raw = await fs.readFile(file, 'utf8');
       const data = JSON.parse(raw);
       data.env = normalizeStoredEnv(data.env);
+      data.ownerId = data.ownerId || 'admin';
+      data.templateId = data.templateId ?? null;
       projects.push({ id: dir, ...data });
     } catch {
       // ignore invalid project
@@ -102,6 +104,8 @@ async function getProject(projectId) {
     const raw = await fs.readFile(configPath(projectId), 'utf8');
     const data = JSON.parse(raw);
     data.env = normalizeStoredEnv(data.env);
+    data.ownerId = data.ownerId || 'admin';
+    data.templateId = data.templateId ?? null;
     return { id: projectId, ...data };
   } catch {
     return null;
@@ -111,7 +115,9 @@ async function getProject(projectId) {
 async function saveProject(projectId, data) {
   const envUpdates = Array.isArray(data?.env) ? data.env : [];
   const storedEnv = formatEnvForStorage([], envUpdates);
-  await writeProject(projectId, { ...data, env: storedEnv });
+  const ownerId = data?.ownerId || 'admin';
+  const templateId = data?.templateId ?? null;
+  await writeProject(projectId, { ...data, env: storedEnv, ownerId, templateId });
 }
 
 async function updateProject(projectId, updates) {
@@ -120,7 +126,15 @@ async function updateProject(projectId, updates) {
     throw new Error('Project not found');
   }
   const storedEnv = formatEnvForStorage(existing.env || [], updates.env);
-  const next = { ...existing, ...updates, env: storedEnv };
+  const next = {
+    ...existing,
+    ...updates,
+    ownerId: updates.ownerId || existing.ownerId || 'admin',
+    templateId: Object.prototype.hasOwnProperty.call(updates, 'templateId')
+      ? (updates.templateId ?? null)
+      : (existing.templateId ?? null),
+    env: storedEnv
+  };
   await writeProject(projectId, next);
   return next;
 }

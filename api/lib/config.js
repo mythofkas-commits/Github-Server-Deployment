@@ -9,6 +9,12 @@ const BUILD_DIR = resolvePath(process.env.BUILD_DIR, '/var/deploy/builds');
 const NGINX_ROOT = resolvePath(process.env.NGINX_ROOT, '/var/www');
 const SECRETS_MASTER_KEY = process.env.SECRETS_MASTER_KEY || '';
 const isProduction = process.env.NODE_ENV === 'production';
+const ADMIN_USERNAME = (process.env.ADMIN_USERNAME || 'admin').trim() || 'admin';
+const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || '';
+const SESSION_SECRET = process.env.SESSION_SECRET || '';
+const ALLOWED_ORIGIN = (process.env.ALLOWED_ORIGIN || 'http://localhost:5173').trim();
+const MAX_QUEUE_SIZE = Math.max(1, Number.parseInt(process.env.MAX_QUEUE_SIZE || '50', 10));
+const USERS_FILE = resolvePath(process.env.USERS_FILE, path.join(__dirname, '..', 'data', 'users.json'));
 
 if (!SECRETS_MASTER_KEY) {
   if (isProduction) {
@@ -18,6 +24,28 @@ if (!SECRETS_MASTER_KEY) {
   }
 } else if (SECRETS_MASTER_KEY.length < 16 || SECRETS_MASTER_KEY === 'test-master-key') {
   console.warn('[config] SECRETS_MASTER_KEY looks weak. Use a strong random string before deploying to production.');
+}
+
+if (!ADMIN_PASSWORD_HASH) {
+  const message = '[config] ADMIN_PASSWORD_HASH is not set. API login is disabled until this is configured.';
+  if (isProduction) {
+    throw new Error(message);
+  } else {
+    console.warn(message);
+  }
+}
+
+if (!SESSION_SECRET || SESSION_SECRET.length < 16) {
+  const message = '[config] SESSION_SECRET must be a strong random string.';
+  if (isProduction) {
+    throw new Error(message);
+  } else {
+    console.warn(message);
+  }
+}
+
+if (!ALLOWED_ORIGIN) {
+  console.warn('[config] ALLOWED_ORIGIN is empty. Set it to your frontend origin to enable CORS.');
 }
 
 module.exports = {
@@ -35,5 +63,12 @@ module.exports = {
   NGINX_SITES_AVAILABLE: resolvePath(process.env.NGINX_SITES_AVAILABLE, '/etc/nginx/sites-available'),
   NGINX_SITES_ENABLED: resolvePath(process.env.NGINX_SITES_ENABLED, '/etc/nginx/sites-enabled'),
   PM2_BIN: process.env.PM2_BIN || 'pm2',
-  DEPLOY_USER: process.env.DEPLOY_USER || process.env.USER || 'root'
+  DEPLOY_USER: process.env.DEPLOY_USER || process.env.USER || 'root',
+  ADMIN_USERNAME,
+  ADMIN_PASSWORD_HASH,
+  SESSION_SECRET,
+  ALLOWED_ORIGIN,
+  MAX_QUEUE_SIZE,
+  USERS_FILE,
+  isProduction
 };

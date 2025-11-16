@@ -1,9 +1,29 @@
 const path = require('path');
 const config = require('./config');
+const { getTemplate } = require('./commandTemplates');
 
 const BRANCH_PATTERN = /^[A-Za-z0-9._/-]{1,128}$/;
 const TARGETS = new Set(['server', 'github-pages', 'both']);
 const RUNTIMES = new Set(['static', 'node']);
+
+const sanitizeRelativePath = (value, field) => {
+  if (value == null) return undefined;
+  const normalizedInput = String(value).trim();
+  if (!normalizedInput) {
+    return '';
+  }
+  if (path.isAbsolute(normalizedInput)) {
+    throw new Error(`${field} must be relative to the repository root`);
+  }
+  const safePath = path.posix.normalize(normalizedInput.replace(/\\/g, '/'));
+  if (safePath.startsWith('..')) {
+    throw new Error(`${field} cannot reference parent directories`);
+  }
+  if (safePath === '.') {
+    return '.';
+  }
+  return safePath.replace(/^\.\//, '');
+};
 
 const parseGitHubRepo = (input) => {
   if (!input || typeof input !== 'string') return null;
@@ -66,12 +86,35 @@ const coerceString = (value, field, { required = false } = {}) => {
   return trimmed;
 };
 
+const sanitizeOptionalTemplateId = (value) => {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== 'string') {
+    throw new Error('templateId must be a string');
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!getTemplate(trimmed)) {
+    throw new Error('Invalid command template');
+  }
+  return trimmed;
+};
+
+const sanitizeRequiredTemplateId = (value) => {
+  const normalized = sanitizeOptionalTemplateId(value);
+  if (normalized === undefined || normalized === null) {
+    throw new Error('templateId is required');
+  }
+  return normalized;
+};
+
 function validateProjectPayload(payload = {}, options = {}) {
   const partial = !!options.partial;
   const projectId = options.projectId;
   const existing = options.existing || {};
   const project = {};
   let repoMeta = null;
+  const isAdmin = !!options.isAdmin || options.role === 'admin';
 
   if (payload.repoUrl !== undefined) {
     repoMeta = parseGitHubRepo(payload.repoUrl);
@@ -100,27 +143,47 @@ function validateProjectPayload(payload = {}, options = {}) {
     project.branch = branchValue;
   }
 
-  const buildCommandValue = payload.buildCommand !== undefined
-    ? coerceString(payload.buildCommand, 'buildCommand', { required: true })
-    : (!partial && !existing.buildCommand ? 'npm run build' : undefined);
-  if (buildCommandValue !== undefined) {
-    project.buildCommand = buildCommandValue;
+  const templateValue = payload.templateId;
+  if (isAdmin) {
+    if (templateValue !== undefined) {
+      const templateId = sanitizeOptionalTemplateId(templateValue);
+      project.templateId = templateId ?? null;
+    } else if (!partial && !Object.prototype.hasOwnProperty.call(existing, 'templateId')) {
+      project.templateId = null;
+    }
+  } else {
+    const templateId = sanitizeRequiredTemplateId(
+      templateValue !== undefined ? templateValue : existing.templateId
+    );
+    project.templateId = templateId;
+  }
+
+  if (isAdmin) {
+    const buildCommandValue = payload.buildCommand !== undefined
+      ? coerceString(payload.buildCommand, 'buildCommand', { required: true })
+      : (!partial && !existing.buildCommand ? 'npm run build' : undefined);
+    if (buildCommandValue !== undefined) {
+      project.buildCommand = buildCommandValue;
+    }
   }
 
   if (payload.buildOutput !== undefined) {
-    project.buildOutput = coerceString(payload.buildOutput, 'buildOutput', { required: true });
+    const buildOutput = coerceString(payload.buildOutput, 'buildOutput', { required: true });
+    project.buildOutput = sanitizeRelativePath(buildOutput, 'buildOutput');
   } else if (!partial && !existing.buildOutput) {
-    project.buildOutput = config.DEFAULT_BUILD_OUTPUT;
+    project.buildOutput = sanitizeRelativePath(config.DEFAULT_BUILD_OUTPUT, 'buildOutput');
   }
 
-  if (payload.installCommand !== undefined) {
-    project.installCommand = coerceString(payload.installCommand, 'installCommand') || '';
-  }
-  if (payload.testCommand !== undefined) {
-    project.testCommand = coerceString(payload.testCommand, 'testCommand') || '';
-  }
-  if (payload.startCommand !== undefined) {
-    project.startCommand = coerceString(payload.startCommand, 'startCommand') || '';
+  if (isAdmin) {
+    if (payload.installCommand !== undefined) {
+      project.installCommand = coerceString(payload.installCommand, 'installCommand') || '';
+    }
+    if (payload.testCommand !== undefined) {
+      project.testCommand = coerceString(payload.testCommand, 'testCommand') || '';
+    }
+    if (payload.startCommand !== undefined) {
+      project.startCommand = coerceString(payload.startCommand, 'startCommand') || '';
+    }
   }
   if (payload.description !== undefined) {
     project.description = coerceString(payload.description, 'description') || '';
